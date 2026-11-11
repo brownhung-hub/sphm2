@@ -2,7 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-
+#include <unistd.h>
 int main(int argc, char *argv[]) {
   if (argc > 1) {
     fprintf(stderr, "Usage: ./sp\n");
@@ -18,6 +18,7 @@ int main(int argc, char *argv[]) {
 
   while (1) {
     char *command_buffer = NULL;
+
     Command command = {.buf = command_buffer, .len = 0, .type = UNKNOWN};
     // TODO: poll the STDIO/FIFO for commands.
 
