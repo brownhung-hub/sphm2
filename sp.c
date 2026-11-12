@@ -6,6 +6,14 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
+
+typedef struct NODE{
+    char *key;
+    char *value;
+    struct NODE *next;
+} NODE;
+NODE *head = NULL;
+
 int main(int argc, char *argv[]) {
   if (argc > 1) {
     fprintf(stderr, "Usage: ./sp\n");
@@ -132,10 +140,71 @@ int create_handler(char *buf, size_t len) {
 
 int store_handler(char *buf, size_t len) {
   // TODO: Implement the STORE command handler.
+  char *ptr = strchr(buf,' ');
+  ptr[0]= '\0';
+  
+  NODE *cur = head;
+  while(cur!=NULL){
+    if(strcmp(cur->key,buf)==0){
+      char *nvalue = malloc(strlen(&ptr[1])+1);
+      strcpy(nvalue,&ptr[1]);
+      free(cur->value);
+      cur->value = nvalue;
+      return 0;
+    }
+    cur = cur->next;
+  }
+  
+  NODE *newnode = (NODE *)malloc(sizeof(NODE));
+  char *nkey = malloc(strlen(buf)+1);
+  strcpy(nkey,buf);
+  char *nvalue = malloc(strlen(&ptr[1])+1);
+  strcpy(nvalue,&ptr[1]);
+  newnode->key= nkey;
+  newnode->value = nvalue;
+  newnode->next = NULL; 
+
+  if(head == NULL){
+    head = newnode;
+  }else{
+    NODE *cur = head;
+    while(cur->next!=NULL){
+      cur = cur->next;
+    }
+    cur->next = newnode;
+  }
+  
+  return 0;
+
 }
 
 int delete_handler(char *buf, size_t len) {
   // TODO: Implement the DELETE command handler.
+  char *ptr = strchr(buf,'\n');
+  ptr[0]= '\0';
+  NODE *cur = head;
+  if(head == NULL)
+    return 0;
+  if(strcmp(cur->key,buf)==0){
+    NODE *delete = cur;
+    head = cur->next;
+    free(delete->key);
+    free(delete->value);
+    free(delete);
+    return 0;
+  }
+  while(cur->next!=NULL){
+    if(strcmp(cur->next->key,buf)==0){
+      NODE *next = cur->next;
+      cur->next = cur->next->next;
+      free(next->key);
+      free(next->value);
+      free(next);
+      return 0;
+    }
+    cur = cur->next;
+  }
+  return 0;
 }
 
 int fetch_handler(char *buf, size_t len) {
