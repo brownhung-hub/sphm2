@@ -6,7 +6,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
-
+#include <poll.h>
 typedef struct NODE{
     char *key;
     char *value;
@@ -14,6 +14,18 @@ typedef struct NODE{
 } NODE;
 NODE *head = NULL;
 
+typedef struct fetchcommand{
+  char hash[17];
+  int replyfd;
+  int is_active;
+}fetchcommand;
+
+typedef struct {
+    int read_fd;   
+    int write_fd;  
+} ChildNode;
+
+ChildNode children[32];
 int main(int argc, char *argv[]) {
   if (argc > 1) {
     fprintf(stderr, "Usage: ./sp\n");
@@ -40,18 +52,57 @@ int main(int argc, char *argv[]) {
   }
   // end TODO
 
+  for(int i = 0; i < 32; i++) {
+      children[i].read_fd = -1;
+      children[i].write_fd = -1;
+  }
   while (1) {
+    struct pollfd pfds[33];
+    int num=0;
+    pfds[0].fd=read_fd;
+    pfds[0].events=POLLIN;
+    int judge_index = 0;
+    num++;
+    fetchcommand fetchtable[32];
     char *command_buffer = NULL;
     Command command = {.buf = command_buffer, .len = 0, .type = UNKNOWN};
     size_t size =0;
-    FILE *read_stream = (read_fd == STDIN_FILENO)? stdin: fdopen(read_fd,"r");
-    if(getline(&command_buffer,&size,read_stream)==-1){
-      free(command_buffer);
-      break;
-    }
-    
-    // TODO: poll the STDIO/FIFO for commands.
 
+    for (int i = 0; i < 32; i++) {
+        if (children[i].read_fd != -1) {
+            pfds[num].fd = children[i].read_fd;
+            pfds[num].events = POLLIN;
+            num++;
+        }
+    }
+    // TODO: poll the STDIO/FIFO for commands.
+    int ready = poll(pfds,num,-1);
+    for(int i=0;i<num;i++){
+      if(pfds[i].revents&POLLIN){
+        char buffer[4096];
+        memset(buffer,0,sizeof(buffer));
+        int bytes = read(pfds[i].fd,buffer,sizeof(buffer)-1);
+        if(bytes > 0){
+          command_buffer = malloc(strlen(buffer));
+          strcpy(command_buffer,buffer);
+          break;
+        }else if (bytes==0){
+          close(pfds[i].fd);
+          if (i == judge_index) {
+              return 0;
+          } else {
+              for (int j = 0; j < 32; j++) {
+                  if (children[j].read_fd == pfds[i].fd) {
+                      close(children[j].write_fd); // 寫入端也一起關掉
+                      children[j].read_fd = -1;
+                      children[j].write_fd = -1;
+                      break;
+                  }
+              }
+          }
+        }
+      }
+    }
     // end TODO
 
     // TODO: poll parent, and child processes for custom commands.
@@ -59,30 +110,33 @@ int main(int argc, char *argv[]) {
     // end TODO
 
     // TODO: classify the command and execute it.
-    char *action = strtok(command_buffer, " \n");
-    if(action!=NULL){
-      if(strcmp(action,"create")==0){
-        command.type= CREATE;
-      }else if(strcmp(action,"store")==0){
-        command.type= STORE;
-      }else if(strcmp(action,"delete")==0){
-        command.type= DELETE;
-      }else if(strcmp(action,"fetch")==0){
-        command.type= FETCH;
-      }else if(strcmp(action,"kill")==0){
-        command.type= KILL;
-      }else if(strcmp(action,"update")==0){
-        command.type= UPDATE;
-      }else{
-        command.type= UNKNOWN;
+    if(command_buffer!=NULL){
+      char *action = strtok(command_buffer, " \n");
+      if(action!=NULL){
+        if(strcmp(action,"create")==0){
+          command.type= CREATE;
+        }else if(strcmp(action,"store")==0){
+          command.type= STORE;
+        }else if(strcmp(action,"delete")==0){
+          command.type= DELETE;
+        }else if(strcmp(action,"fetch")==0){
+          command.type= FETCH;
+        }else if(strcmp(action,"kill")==0){
+          command.type= KILL;
+        }else if(strcmp(action,"update")==0){
+          command.type= UPDATE;
+        }else{
+          command.type= UNKNOWN;
+        }
       }
+      char *args = strtok(NULL, "\n");
+      if(args!=NULL){
+        command.buf = args;
+        command.len = strlen(args);
+      }
+      command_handler(&command);
     }
-    char *args = strtok(NULL, "\n");
-    if(args!=NULL){
-      command.buf = args;
-      command.len = strlen(args);
-    }
-    command_handler(&command);
+    
     // end TODO
 
     // TODO: handle custom commands.
@@ -125,13 +179,35 @@ int create_handler(char *buf, size_t len) {
   char *reply_fifo = strtok(NULL,"\n");
   if(command_fifo==NULL||reply_fifo==NULL)
     return -1;
+  int slot = -1;
+  for (int i = 0; i < 32; i++) {
+      if (children[i].read_fd == -1) {
+          slot = i;
+          break;
+      }
+  }
+  int p2cfd[2];
+  int c2pfd[2];
+  if(pipe(p2cfd)==-1||pipe(c2pfd)==-1)
+    return -1;
   pid_t pid = fork();
   if(pid == 0){
+    close(p2cfd[1]);
+    close(c2pfd[0]);
+    char p2c_str[16], c2p_str[16];
+    sprintf(p2c_str, "%d", p2cfd[0]); 
+    sprintf(c2p_str, "%d", c2pfd[1]);
+    setenv("PARENT_READ_FD", p2c_str, 1);  
+    setenv("PARENT_WRITE_FD", c2p_str, 1); 
     setenv("CMDPIPENAME",command_fifo,1);
     setenv("REPLYPIPENAME",reply_fifo,1);
     char *args[]= {"./sp", NULL};
     execvp("./sp",args);
-  }else if(pid ==1){
+  }else if(pid > 0){
+    close(p2cfd[0]); 
+    close(c2pfd[1]);
+    children[slot].read_fd = c2pfd[0];
+    children[slot].write_fd = p2cfd[1];
     return 0;
   }else {
     return -1;
