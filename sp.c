@@ -7,6 +7,13 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <poll.h>
+
+
+int currentfd = -1;
+int parent_write_fd =-1;
+int parent_read_fd =-1;
+int is_sp_main = 0;
+char *consultant_path = NULL;
 typedef struct NODE{
     char *key;
     char *value;
@@ -19,7 +26,7 @@ typedef struct fetchcommand{
   int replyfd;
   int is_active;
 }fetchcommand;
-
+fetchcommand fetchtable[32];
 typedef struct {
     int read_fd;   
     int write_fd;  
@@ -36,12 +43,14 @@ int main(int argc, char *argv[]) {
   //       After that, you may want to make the following code the same for both
   //       SP main and SP child processes. Therefore, you will set some
   //       variables here.
-  int is_sp_main =0;
+  
   int read_fd = STDIN_FILENO;
   int reply_fd = STDOUT_FILENO;
   char *cmd_path = getenv("CMDPIPENAME");
   char *reply_path = getenv("REPLYPIPENAME");
-  char *consultant_path = getenv("JUDGE_CONSULTANT");
+  consultant_path = getenv("JUDGE_CONSULTANT");
+  parent_read_fd=atoi(getenv("PARENT_read_FD"));
+  parent_write_fd=atoi(getenv("PARENT_WRITE_FD"));
   if(cmd_path!= NULL && reply_path !=NULL){
     mkfifo(cmd_path,0666);
     mkfifo(reply_path,0666);
@@ -55,7 +64,9 @@ int main(int argc, char *argv[]) {
   for(int i = 0; i < 32; i++) {
       children[i].read_fd = -1;
       children[i].write_fd = -1;
+      fetchtable[i].replyfd = -1;
   }
+   
   while (1) {
     struct pollfd pfds[33];
     int num=0;
@@ -63,7 +74,6 @@ int main(int argc, char *argv[]) {
     pfds[0].events=POLLIN;
     int judge_index = 0;
     num++;
-    fetchcommand fetchtable[32];
     char *command_buffer = NULL;
     Command command = {.buf = command_buffer, .len = 0, .type = UNKNOWN};
     size_t size =0;
@@ -85,6 +95,7 @@ int main(int argc, char *argv[]) {
         if(bytes > 0){
           command_buffer = malloc(strlen(buffer));
           strcpy(command_buffer,buffer);
+          currentfd = pfds[i].fd;
           break;
         }else if (bytes==0){
           close(pfds[i].fd);
@@ -113,6 +124,25 @@ int main(int argc, char *argv[]) {
     if(command_buffer!=NULL){
       char *action = strtok(command_buffer, " \n");
       if(action!=NULL){
+        int is_reply = 0;
+        for (int i = 0; i < 32; i++) {
+            if (fetchtable[i].replyfd != -1 && strcmp(fetchtable[i].hash, action) == 0) {
+                is_reply = 1;
+                char *value = strtok(NULL, "\n");
+                if (value != NULL) {
+                    char result[4096];
+                    snprintf(result, sizeof(result), "%s %s\n", action, value);
+                    write(fetchtable[i].replyfd, result, strlen(result));
+                    
+                    fetchtable[i].replyfd = -1; 
+                }
+                break;
+            }
+        }
+        if (is_reply) {
+          free(command_buffer);
+          continue; 
+        }
         if(strcmp(action,"create")==0){
           command.type= CREATE;
         }else if(strcmp(action,"store")==0){
@@ -138,7 +168,7 @@ int main(int argc, char *argv[]) {
     }
     
     // end TODO
-
+    
     // TODO: handle custom commands.
 
     // end TODO
@@ -285,6 +315,84 @@ int delete_handler(char *buf, size_t len) {
 
 int fetch_handler(char *buf, size_t len) {
   // TODO: Implement the FETCH command handler.
+  char *ptr = strchr(buf,' ');
+  ptr[0]= '\0';
+  
+  NODE *cur = head;
+  while(cur!=NULL){
+    if(strcmp(cur->key,&ptr[1])==0){
+      char result[4096];
+      snprintf(result, sizeof(result), "%s %s\n",buf,cur->value);
+      write(currentfd,result,strlen(result));
+      return 0;
+    }
+    cur = cur->next;
+  }
+
+  if (is_sp_main == 1) {
+      char ans_value[4096];
+      while (1) {
+          int to_c[2], from_c[2]; // to_c: SP寫給顧問, from_c: 顧問寫給SP
+          if (pipe(to_c) == -1 || pipe(from_c) == -1) return -1;
+          
+          pid_t cpid = fork();
+          if (cpid == 0) {
+              // 這裡是 Consultant 子行程
+              // SP main calls fork() and exec() on the consultant
+              dup2(to_c[0], STDIN_FILENO);   // 把 STDIN 接到 to_c 的讀取端
+              dup2(from_c[1], STDOUT_FILENO);// 把 STDOUT 接到 from_c 的寫入端
+              close(to_c[0]); close(to_c[1]);
+              close(from_c[0]); close(from_c[1]);
+              
+              char *c_args[] = {consultant_path, NULL};
+              execv(consultant_path, c_args);
+              exit(1); 
+          }
+          
+          close(to_c[0]); // 關閉用不到的讀取端
+          close(from_c[1]); // 關閉用不到的寫入端
+          
+          char key_buf[4096];
+          snprintf(key_buf, sizeof(key_buf), "%s\n", &ptr[1]);
+          write(to_c[1], key_buf, strlen(key_buf));
+          close(to_c[1]); 
+          
+          char c_reply[4096];
+          memset(c_reply, 0, sizeof(c_reply));
+          read(from_c[0], c_reply, sizeof(c_reply) - 1);
+          close(from_c[0]);
+          
+          waitpid(cpid, NULL, 0); 
+          
+          if (strncmp(c_reply, "Ok: ", 4) == 0) {
+              // 成功了！把 v 抽出來
+              char *v_start = c_reply + 4;
+              char *newline = strchr(v_start, '\n');
+              if (newline) *newline = '\0'; 
+              
+              strcpy(ans_value, v_start);
+              break; 
+          }
+      }
+      
+      char result[4096];
+      snprintf(result, sizeof(result), "%s %s\n", buf, ans_value);
+      write(currentfd, result, strlen(result)); // 直接回傳給問問題的那個 fd
+      return 0;
+
+  } else {
+      for(int i=0;i<32;i++){
+        if(fetchtable[i].replyfd==-1){
+          fetchtable[i].replyfd=currentfd;
+          strcpy(fetchtable[i].hash,buf);
+          char result[4096];
+          snprintf(result, sizeof(result), "fetch %s %s\n ",buf,&ptr[1]);
+          write(parent_write_fd,result,strlen(result));
+          break;
+        }
+      }
+  }
+  return 0;
 }
 
 int kill_handler(char *buf, size_t len) {
