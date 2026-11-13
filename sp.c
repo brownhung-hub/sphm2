@@ -398,6 +398,7 @@ int create_handler(char *buf, size_t len) {
     fcntl(p2cfd[1], F_SETFD, FD_CLOEXEC);
     children[slot].read_fd = c2pfd[0];
     children[slot].write_fd = p2cfd[1];
+    children[slot].pid = pid;
     return 0;
   }else {
     return -1;
@@ -579,4 +580,14 @@ int kill_handler(char *buf, size_t len) {
 
 int update_handler(char *buf, size_t len) {
   // TODO: Implement the UPDATE command handler.
+  struct stat st;
+  if (stat(buf, &st) == 0 && S_ISREG(st.st_mode) && access(buf, X_OK) == 0) {
+      static char *dynamic_consultant = NULL;
+      if (dynamic_consultant != NULL) {
+          free(dynamic_consultant); 
+      }
+      dynamic_consultant = strdup(buf);
+      consultant_path = dynamic_consultant; 
+  }
+  return 0;
 }
