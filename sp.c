@@ -17,6 +17,12 @@ int parent_read_fd =-1;
 int is_sp_main = 0;
 char *consultant_path = NULL;
 typedef struct {
+    char *data;
+    size_t len;
+    size_t capacity;
+} LineBuffer;
+
+typedef struct {
     int read_fd;   
     int write_fd;
     pid_t pid;
@@ -30,11 +36,6 @@ typedef struct NODE{
 } NODE;
 NODE *head = NULL;
 
-typedef struct {
-    char *data;
-    size_t len;
-    size_t capacity;
-} LineBuffer;
 
 int buffer_append(LineBuffer *b, const char *src, size_t n) {
 
