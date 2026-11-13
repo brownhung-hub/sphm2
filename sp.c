@@ -152,9 +152,8 @@ void process_parent_reply_line(char *line) {
             fetchtable[i].replyfd = -1; 
 
             // 轉發給目標 (Judge 或下一層的 Child)
-            char result[4096];
-            snprintf(result, sizeof(result), "%s\n", line);
-            write(target_fd, result, strlen(result));
+            write(target_fd, line, strlen(line));
+            write(target_fd, "\n", 1);
             break;
         }
     }
@@ -479,9 +478,10 @@ int fetch_handler(char *buf, size_t len) {
   NODE *cur = head;
   while(cur!=NULL){
     if(strcmp(cur->key,&ptr[1])==0){
-      char result[4096];
-      snprintf(result, sizeof(result), "%s %s\n",buf,cur->value);
-      write(current_reply_fd,result,strlen(result));
+      write(current_reply_fd, buf, strlen(buf));
+      write(current_reply_fd, " ", 1);
+      write(current_reply_fd, cur->value, strlen(cur->value));
+      write(current_reply_fd, "\n", 1);
       return 0;
     }
     cur = cur->next;
@@ -540,9 +540,11 @@ int fetch_handler(char *buf, size_t len) {
         if(fetchtable[i].replyfd==-1){
           fetchtable[i].replyfd=current_reply_fd;
           strcpy(fetchtable[i].hash,buf);
-          char result[4096];
-          snprintf(result, sizeof(result), "fetch %s %s\n",buf,&ptr[1]);
-          write(parent_write_fd,result,strlen(result));
+          write(parent_write_fd, "fetch ", 6);
+          write(parent_write_fd, buf, strlen(buf));
+          write(parent_write_fd, " ", 1);
+          write(parent_write_fd, &ptr[1], strlen(&ptr[1]));
+          write(parent_write_fd, "\n", 1);
           break;
         }
       }
